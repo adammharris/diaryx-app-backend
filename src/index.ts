@@ -592,7 +592,7 @@ if (import.meta.main) {
   const app = createApp();
 
   app.listen(PORT);
-  console.log(`🦊 Elysia backend listening on port ${PORT}`);
+  console.log(`v1 Elysia backend listening on port ${PORT}`);
 
   const shutdown = async (signal: string) => {
     try {
