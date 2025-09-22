@@ -1,4 +1,4 @@
-import { Pool } from "@neondatabase/serverless";
+import { Pool } from "pg";
 import { betterAuth } from "better-auth";
 
 import { getDatabaseUrl, readAuthConfig } from "./env";

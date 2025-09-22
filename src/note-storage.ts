@@ -10,7 +10,7 @@
  * - diaryx_visibility_term(user_id, term, emails, updated_at)
  */
 
-import type { Pool } from "@neondatabase/serverless";
+import type { Pool } from "pg";
 import { getDbPool } from "./auth";
 
 export interface SyncInputNote {
@@ -58,7 +58,7 @@ const ensureNotesTable = async (): Promise<Pool> => {
 
   // Composite index to accelerate queries by user and recency
   await pool.query(
-    `CREATE INDEX IF NOT EXISTS diaryx_note_user_updated_idx ON diaryx_note (user_id, updated_at DESC);`
+    `CREATE INDEX IF NOT EXISTS diaryx_note_user_updated_idx ON diaryx_note (user_id, updated_at DESC);`,
   );
 
   // Visibility terms table
@@ -86,7 +86,7 @@ export const listNotesForUser = async (userId: string): Promise<DbNote[]> => {
        FROM diaryx_note
       WHERE user_id = $1
       ORDER BY last_modified DESC, updated_at DESC`,
-    [userId]
+    [userId],
   );
   return result.rows;
 };
@@ -95,7 +95,7 @@ export const listNotesForUser = async (userId: string): Promise<DbNote[]> => {
  * Lists all visibility terms for a specific user.
  */
 export const listVisibilityTermsForUser = async (
-  userId: string
+  userId: string,
 ): Promise<Array<{ term: string; emails: string[] }>> => {
   const pool = await ensureNotesTable();
   const result = await pool.query<{ term: string; emails: string[] }>(
@@ -103,7 +103,7 @@ export const listVisibilityTermsForUser = async (
        FROM diaryx_visibility_term
       WHERE user_id = $1
       ORDER BY term ASC`,
-    [userId]
+    [userId],
   );
   return result.rows;
 };
@@ -114,7 +114,7 @@ export const listVisibilityTermsForUser = async (
  */
 export const upsertNotesForUser = async (
   userId: string,
-  notes: SyncInputNote[]
+  notes: SyncInputNote[],
 ): Promise<void> => {
   if (!notes?.length) return;
 
@@ -133,7 +133,7 @@ export const upsertNotesForUser = async (
                last_modified = EXCLUDED.last_modified,
                updated_at = NOW()
          WHERE EXCLUDED.last_modified >= diaryx_note.last_modified;`,
-      [userId, note.id, note.markdown, note.sourceName ?? null, lastModified]
+      [userId, note.id, note.markdown, note.sourceName ?? null, lastModified],
     );
   });
 
@@ -146,7 +146,9 @@ export const upsertNotesForUser = async (
 export const deleteAllNotesForUser = async (userId: string): Promise<void> => {
   const pool = await ensureNotesTable();
   await pool.query(`DELETE FROM diaryx_note WHERE user_id = $1`, [userId]);
-  await pool.query(`DELETE FROM diaryx_visibility_term WHERE user_id = $1`, [userId]);
+  await pool.query(`DELETE FROM diaryx_visibility_term WHERE user_id = $1`, [
+    userId,
+  ]);
 };
 
 /**
@@ -154,10 +156,13 @@ export const deleteAllNotesForUser = async (userId: string): Promise<void> => {
  */
 export const deleteNoteForUser = async (
   userId: string,
-  noteId: string
+  noteId: string,
 ): Promise<void> => {
   const pool = await ensureNotesTable();
-  await pool.query(`DELETE FROM diaryx_note WHERE user_id = $1 AND id = $2`, [userId, noteId]);
+  await pool.query(`DELETE FROM diaryx_note WHERE user_id = $1 AND id = $2`, [
+    userId,
+    noteId,
+  ]);
 };
 
 /**
@@ -165,7 +170,7 @@ export const deleteNoteForUser = async (
  */
 export const updateVisibilityTermsForUser = async (
   userId: string,
-  terms: Record<string, string[]>
+  terms: Record<string, string[]>,
 ): Promise<void> => {
   const pool = await ensureNotesTable();
 
@@ -176,21 +181,23 @@ export const updateVisibilityTermsForUser = async (
       new Set(
         (emails ?? [])
           .map((email) => (email ?? "").toString().trim().toLowerCase())
-          .filter(Boolean)
-      )
+          .filter(Boolean),
+      ),
     ),
   }));
 
   // Clear existing and re-insert
-  await pool.query(`DELETE FROM diaryx_visibility_term WHERE user_id = $1`, [userId]);
+  await pool.query(`DELETE FROM diaryx_visibility_term WHERE user_id = $1`, [
+    userId,
+  ]);
   if (!termEntries.length) return;
 
   const insertPromises = termEntries.map(({ term, emails }) =>
     pool.query(
       `INSERT INTO diaryx_visibility_term (user_id, term, emails, updated_at)
          VALUES ($1, $2, $3::text[], NOW())`,
-      [userId, term, emails]
-    )
+      [userId, term, emails],
+    ),
   );
   await Promise.all(insertPromises);
 };
@@ -199,14 +206,16 @@ export const updateVisibilityTermsForUser = async (
  * Finds notes which might be shared with the provided email by scanning markdown contents.
  * Caller should verify actual access based on parsed metadata and visibility_emails.
  */
-export const listNotesSharedWithEmail = async (email: string): Promise<DbSharedNote[]> => {
+export const listNotesSharedWithEmail = async (
+  email: string,
+): Promise<DbSharedNote[]> => {
   const pool = await ensureNotesTable();
   const result = await pool.query<DbSharedNote>(
     `SELECT user_id, id, markdown, source_name, last_modified
        FROM diaryx_note
       WHERE markdown ILIKE '%' || $1 || '%'
       ORDER BY updated_at DESC`,
-    [email]
+    [email],
   );
   return result.rows;
 };

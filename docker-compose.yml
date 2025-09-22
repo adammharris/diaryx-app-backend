@@ -1,0 +1,25 @@
+version: "3.9"
+services:
+  backend:
+    image: calmdolphin/diaryx-app-backend:latest
+    restart: unless-stopped
+    env_file: .env
+    networks:
+      - appnet
+
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_data:/data
+      - ./caddy_config:/config
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    driver: bridge
