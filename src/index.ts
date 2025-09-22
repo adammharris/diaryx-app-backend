@@ -292,7 +292,7 @@ export const createApp = () =>
   new Elysia()
     .use(openapi())
     // CORS
-    //.use(cors())
+    .use(cors())
     // Health
     .get(
       "/",
