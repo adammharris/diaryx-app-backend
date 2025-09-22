@@ -27,14 +27,49 @@ const createAuthStub = (message: string): ReturnType<typeof betterAuth> =>
     },
   }) as unknown as ReturnType<typeof betterAuth>;
 
-const createPool = (databaseUrl: string) =>
-  new Pool({
+const createPool = (databaseUrl: string) => {
+  // Robust SSL selection:
+  // - Respect explicit ssl/sslmode query params
+  // - Disable SSL for localhost/127.0.0.1 by default
+  // - Enable relaxed TLS for hosted DBs by default
+  let ssl: boolean | { rejectUnauthorized: boolean } | undefined;
+
+  try {
+    const u = new URL(databaseUrl);
+    const host = (u.hostname || "").toLowerCase();
+    const params = u.searchParams;
+    const sslParam = params.get("ssl");
+    const sslmode = params.get("sslmode");
+
+    if (sslmode) {
+      // Common values: disable, allow, prefer, require, verify-ca, verify-full
+      if (/^disable$/i.test(sslmode)) {
+        ssl = false;
+      } else {
+        // Use relaxed TLS to support most hosted providers without CA bundles
+        ssl = { rejectUnauthorized: false };
+      }
+    } else if (sslParam) {
+      if (sslParam === "0" || /^false$/i.test(sslParam)) {
+        ssl = false;
+      } else {
+        ssl = { rejectUnauthorized: false };
+      }
+    } else {
+      const isLocal =
+        host === "localhost" || host === "127.0.0.1" || host.endsWith(".local");
+      ssl = isLocal ? false : { rejectUnauthorized: false };
+    }
+  } catch {
+    // If URL parsing fails, default to relaxed TLS for safety on hosted DBs
+    ssl = { rejectUnauthorized: false };
+  }
+
+  return new Pool({
     connectionString: databaseUrl,
-    // If sslmode isn't explicitly provided, default to TLS with relaxed cert to support most hosts.
-    ssl: databaseUrl.includes("sslmode=")
-      ? undefined
-      : { rejectUnauthorized: false },
+    ssl,
   });
+};
 
 /**
  * Returns a cached Neon connection pool for DATABASE_URL.
@@ -65,8 +100,16 @@ export const getAuth = (): ReturnType<typeof betterAuth> => {
 
   // Merge trusted origins from env with safe defaults (backend hosted on api.diaryx.net)
   const defaultOrigins = [
+    // Prod
     "https://app.diaryx.net",
     "https://*adammharris-projects.vercel.app",
+    // Dev
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4321",
+    "http://127.0.0.1:4321",
   ];
   const mergedOrigins = Array.from(
     new Set([...(trustedOrigins ?? []), ...defaultOrigins]),
@@ -83,9 +126,16 @@ export const getAuth = (): ReturnType<typeof betterAuth> => {
       },
       secret,
       trustedOrigins: mergedOrigins,
+      advanced: {
+        defaultCookieAttributes:
+          process.env.NODE_ENV === "production" ||
+          process.env.NODE_ENV === "staging"
+            ? { sameSite: "none", secure: true, partitioned: true }
+            : { sameSite: "lax", secure: false, partitioned: false },
+      },
+      plugins: [openAPI()],
     });
     authCache.set(cacheKey, auth);
-    plugins: [openAPI()];
   }
   return auth;
 };

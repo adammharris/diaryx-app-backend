@@ -292,14 +292,37 @@ export const createApp = () =>
   new Elysia()
     .use(openapi())
     // CORS
-    .use(cors())
+    .use(
+      cors({
+        origin: CORS_ORIGINS,
+        credentials: true,
+        methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        allowedHeaders: ["Content-Type", "Authorization"],
+      }),
+    )
+
     // Health
     .get(
       "/",
       () =>
-        "<h1>Welcome to the Diaryx API!</h1><p>All systems are working!</p><p>If you want to use the app, please visit <a href='https://app.diaryx.net'>app.diaryx.net</a></p>",
+        "<html><h1>Welcome to the Diaryx API!</h1><p>All systems are working!</p><p>If you want to use the app, please visit <a href='https://app.diaryx.net'>app.diaryx.net</a></p></html>",
     )
     .get("/health", () => "ok")
+    .onError(({ error, set }) => {
+      const anyErr = error as any;
+      const errMsg =
+        typeof anyErr?.message === "string"
+          ? anyErr.message
+          : String(anyErr ?? "");
+      const isDbTlsError =
+        (anyErr && anyErr.code === "ECONNRESET") ||
+        /before secure TLS connection/.test(errMsg) ||
+        /Client network socket disconnected/.test(errMsg);
+      const message = isDbTlsError
+        ? "Database connection failed. Make sure the credentials are correct and no ports are blocked."
+        : errMsg || "Unexpected server error.";
+      return json(set, 500, { error: { message } });
+    })
     // Auth mounted at root so auth routes are under /api/auth/* (Better Auth handles sub-routes)
     .mount(getAuth().handler)
     // Notes: GET (list notes + visibility terms)
@@ -326,7 +349,16 @@ export const createApp = () =>
         console.error("Failed to load notes", error);
         return json(set, 500, {
           error: {
-            message: error?.message ?? "Unexpected error while loading notes.",
+            message:
+              (error && (error as any).code === "ECONNRESET") ||
+              /before secure TLS connection/.test(
+                String((error as any)?.message ?? ""),
+              ) ||
+              /Client network socket disconnected/.test(
+                String((error as any)?.message ?? ""),
+              )
+                ? "Database connection failed. Make sure the credentials are correct and no ports are blocked."
+                : (error?.message ?? "Unexpected error while loading notes."),
           },
         });
       }
@@ -423,7 +455,17 @@ export const createApp = () =>
         console.error("Failed to sync notes", error);
         return json(set, 500, {
           error: {
-            message: error?.message ?? "Unexpected error while syncing notes.",
+            message:
+              (error && (error as any).code === "ECONNRESET") ||
+              /before secure TLS connection/.test(
+                String((error as any)?.message ?? ""),
+              ) ||
+              /Client network socket disconnected/.test(
+                String((error as any)?.message ?? ""),
+              )
+                ? "Database connection failed. Make sure the credentials are correct and no ports are blocked."
+                : ((error as any)?.message ??
+                  "Unexpected error while syncing notes."),
           },
         });
       }
@@ -445,7 +487,17 @@ export const createApp = () =>
         console.error("Failed to delete note", error);
         return json(set, 500, {
           error: {
-            message: error?.message ?? "Unexpected error while deleting note.",
+            message:
+              (error && (error as any).code === "ECONNRESET") ||
+              /before secure TLS connection/.test(
+                String((error as any)?.message ?? ""),
+              ) ||
+              /Client network socket disconnected/.test(
+                String((error as any)?.message ?? ""),
+              )
+                ? "Database connection failed. Make sure the credentials are correct and no ports are blocked."
+                : ((error as any)?.message ??
+                  "Unexpected error while deleting note."),
           },
         });
       }
@@ -503,7 +555,16 @@ export const createApp = () =>
         return json(set, 500, {
           error: {
             message:
-              error?.message ?? "Unexpected error while loading shared notes.",
+              (error && (error as any).code === "ECONNRESET") ||
+              /before secure TLS connection/.test(
+                String((error as any)?.message ?? ""),
+              ) ||
+              /Client network socket disconnected/.test(
+                String((error as any)?.message ?? ""),
+              )
+                ? "Database connection failed. Make sure the credentials are correct and no ports are blocked."
+                : ((error as any)?.message ??
+                  "Unexpected error while loading shared notes."),
           },
         });
       }
