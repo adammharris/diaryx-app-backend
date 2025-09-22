@@ -1,5 +1,6 @@
 import { Pool } from "pg";
 import { betterAuth } from "better-auth";
+import { openAPI } from "better-auth/plugins";
 
 import { getDatabaseUrl, readAuthConfig } from "./env";
 
@@ -84,6 +85,7 @@ export const getAuth = (): ReturnType<typeof betterAuth> => {
       trustedOrigins: mergedOrigins,
     });
     authCache.set(cacheKey, auth);
+    plugins: [openAPI()];
   }
   return auth;
 };

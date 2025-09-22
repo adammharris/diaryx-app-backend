@@ -1,3 +1,7 @@
 api.diaryx.net {
     reverse_proxy backend:3000
+    log {
+        output stdout
+        format console
+    }
 }
