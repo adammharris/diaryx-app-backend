@@ -104,3 +104,12 @@ export const getSessionFromRequest = async <TSession = unknown>(
 };
 
 export type AuthInstance = ReturnType<typeof betterAuth>;
+
+/**
+ * Gracefully close all connection pools (useful for dev restarts and shutdown).
+ */
+export const closeAllDbPools = async (): Promise<void> => {
+  const pools = Array.from(poolCache.values());
+  await Promise.allSettled(pools.map((p) => p.end()));
+  poolCache.clear();
+};

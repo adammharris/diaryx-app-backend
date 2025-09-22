@@ -1,7 +1,7 @@
 import { Elysia } from "elysia";
 import { openapi } from "@elysiajs/openapi";
 import { cors } from "@elysiajs/cors";
-import { getAuth, getSessionFromRequest } from "./auth";
+import { getAuth, getSessionFromRequest, closeAllDbPools } from "./auth";
 import {
   listNotesForUser,
   upsertNotesForUser,
@@ -283,6 +283,232 @@ const json = <T>(set: any, status: number, body: T) => {
 
 type SessionUser = { id: string; email?: string | null };
 
+const PORT = Number(process.env.PORT || 3000);
+
+/**
+ * Build the Elysia app without starting the server.
+ */
+export const createApp = () =>
+  new Elysia()
+    .use(openapi())
+    // CORS
+    .use(cors())
+    // Health
+    .get(
+      "/",
+      () =>
+        "<h1>Welcome to the Diaryx API!</h1><p>All systems are working!</p><p>If you want to use the app, please visit <a href='https://app.diaryx.net'>app.diaryx.net</a></p>",
+    )
+    .get("/health", () => "ok")
+    // Auth mounted at root so auth routes are under /api/auth/* (Better Auth handles sub-routes)
+    .mount(getAuth().handler)
+    // Notes: GET (list notes + visibility terms)
+    .get("/api/notes", async ({ request, set }) => {
+      try {
+        const user = await getUserFromSession(request);
+        if (!user) {
+          return json(set, 401, { error: "UNAUTHORIZED" });
+        }
+        const [rows, terms] = await Promise.all([
+          listNotesForUser(user.id),
+          listVisibilityTermsForUser(user.id),
+        ]);
+        return json(set, 200, {
+          notes: rows.map((row) => ({
+            id: row.id,
+            markdown: row.markdown,
+            sourceName: row.source_name,
+            lastModified: Number((row as any).last_modified ?? Date.now()),
+          })),
+          visibilityTerms: terms,
+        });
+      } catch (error: any) {
+        console.error("Failed to load notes", error);
+        return json(set, 500, {
+          error: {
+            message: error?.message ?? "Unexpected error while loading notes.",
+          },
+        });
+      }
+    })
+    // Notes: POST (sync notes + update visibility terms)
+    .post("/api/notes", async ({ request, set }) => {
+      try {
+        const user = await getUserFromSession(request);
+        if (!user) {
+          return json(set, 401, { error: "UNAUTHORIZED" });
+        }
+
+        let payload: any;
+        try {
+          payload = await request.json();
+        } catch {
+          return json(set, 400, { error: "INVALID_JSON" });
+        }
+
+        const notesIn = Array.isArray(payload?.notes) ? payload.notes : [];
+        const validNotes = notesIn
+          .filter(
+            (note: any) =>
+              note &&
+              typeof note.id === "string" &&
+              typeof note.markdown === "string",
+          )
+          .map((note: any) => ({
+            id: String(note.id),
+            markdown: String(note.markdown),
+            sourceName:
+              typeof note.sourceName === "string"
+                ? note.sourceName
+                : note.sourceName === null
+                  ? null
+                  : undefined,
+            lastModified:
+              typeof note.lastModified === "number"
+                ? note.lastModified
+                : Number(note.lastModified ?? Date.now()),
+          }));
+
+        if (validNotes.length) {
+          await upsertNotesForUser(user.id, validNotes);
+        }
+
+        const termsIn = Array.isArray(payload?.visibilityTerms)
+          ? payload.visibilityTerms
+          : [];
+        const validTerms = termsIn
+          .filter((item: any) => item && typeof item.term === "string")
+          .map((item: any) => ({
+            term: String(item.term).trim(),
+            emails: Array.isArray(item.emails)
+              ? item.emails
+                  .map((email: unknown) =>
+                    typeof email === "string" ? email.trim().toLowerCase() : "",
+                  )
+                  .filter((email: string) => email.includes("@"))
+              : [],
+          }))
+          .filter(
+            (item: { term: string; emails: string[] }) => item.term.length > 0,
+          );
+
+        if (validTerms.length) {
+          await updateVisibilityTermsForUser(
+            user.id,
+            Object.fromEntries(
+              validTerms.map(
+                ({ term, emails }: { term: string; emails: string[] }) => [
+                  term,
+                  emails,
+                ],
+              ),
+            ),
+          );
+        }
+
+        const [rows, terms] = await Promise.all([
+          listNotesForUser(user.id),
+          listVisibilityTermsForUser(user.id),
+        ]);
+        return json(set, 200, {
+          notes: rows.map((row) => ({
+            id: row.id,
+            markdown: row.markdown,
+            sourceName: row.source_name,
+            lastModified: Number((row as any).last_modified ?? Date.now()),
+          })),
+          visibilityTerms: terms,
+        });
+      } catch (error: any) {
+        console.error("Failed to sync notes", error);
+        return json(set, 500, {
+          error: {
+            message: error?.message ?? "Unexpected error while syncing notes.",
+          },
+        });
+      }
+    })
+    // Notes: DELETE by id
+    .delete("/api/notes/:id", async ({ request, params, set }) => {
+      try {
+        const user = await getUserFromSession(request);
+        if (!user) {
+          return json(set, 401, { error: "UNAUTHORIZED" });
+        }
+        const noteId = (params as any)?.id;
+        if (!noteId) {
+          return json(set, 400, { error: "MISSING_NOTE_ID" });
+        }
+        await deleteNoteForUser(user.id, String(noteId));
+        return json(set, 200, { status: "deleted" });
+      } catch (error: any) {
+        console.error("Failed to delete note", error);
+        return json(set, 500, {
+          error: {
+            message: error?.message ?? "Unexpected error while deleting note.",
+          },
+        });
+      }
+    })
+    // Shared notes visible to current user's email
+    .get("/api/shared-notes", async ({ request, set }) => {
+      try {
+        const user = await getUserFromSession(request);
+        if (!user) {
+          return json(set, 401, { error: "UNAUTHORIZED" });
+        }
+        const userEmail =
+          typeof user.email === "string" ? user.email.trim().toLowerCase() : "";
+        if (!userEmail) {
+          return json(set, 400, { error: "EMAIL_REQUIRED" });
+        }
+
+        const rows: DbSharedNote[] = await listNotesSharedWithEmail(userEmail);
+        const notes: DiaryxNote[] = [];
+        const seen = new Set<string>();
+
+        for (const row of rows) {
+          try {
+            const { note } = parseDiaryxString(row.markdown, {
+              id: row.id,
+              sourceName: row.source_name ?? undefined,
+            });
+            const lastModified = Number(
+              (row as any).last_modified ?? Date.now(),
+            );
+            note.lastModified = Number.isFinite(lastModified)
+              ? lastModified
+              : Date.now();
+            note.sourceName = row.source_name ?? undefined;
+
+            if (!hasSharedAccess(note, userEmail)) continue;
+            if (seen.has(note.id)) continue;
+
+            seen.add(note.id);
+            notes.push(note);
+          } catch (err) {
+            console.warn(`Failed to parse shared note ${row.id}`, err);
+          }
+        }
+
+        notes.sort((a, b) => {
+          const diff = (b.lastModified ?? 0) - (a.lastModified ?? 0);
+          if (diff !== 0) return diff;
+          return a.id.localeCompare(b.id);
+        });
+
+        return json(set, 200, { notes });
+      } catch (error: any) {
+        console.error("Failed to load shared notes", error);
+        return json(set, 500, {
+          error: {
+            message:
+              error?.message ?? "Unexpected error while loading shared notes.",
+          },
+        });
+      }
+    });
+
 /**
  * Resolves the current user from Better Auth session or returns null.
  */
@@ -300,227 +526,24 @@ const getUserFromSession = async (
   return null;
 };
 
-const PORT = Number(process.env.PORT || 3000);
+// Start the server only when this module is run directly, not when imported.
+if (import.meta.main) {
+  const app = createApp();
 
-const app = new Elysia()
-  .use(openapi())
-  // CORS
-  .use(cors())
-  // Health
-  .get(
-    "/",
-    () =>
-      "<h1>Welcome to the Diaryx API!</h1><p>All systems are working!</p><p>If you want to use the app, please visit <a href='https://app.diaryx.net'>app.diaryx.net</a></p>",
-  )
-  .get("/health", () => "ok")
-  // Auth mounted at root so auth routes are under /api/auth/* (Better Auth handles sub-routes)
-  .mount(getAuth().handler)
-  // Notes: GET (list notes + visibility terms)
-  .get("/api/notes", async ({ request, set }) => {
+  app.listen(PORT);
+  console.log(`🦊 Elysia backend listening on port ${PORT}`);
+
+  const shutdown = async (signal: string) => {
     try {
-      const user = await getUserFromSession(request);
-      if (!user) {
-        return json(set, 401, { error: "UNAUTHORIZED" });
-      }
-      const [rows, terms] = await Promise.all([
-        listNotesForUser(user.id),
-        listVisibilityTermsForUser(user.id),
-      ]);
-      return json(set, 200, {
-        notes: rows.map((row) => ({
-          id: row.id,
-          markdown: row.markdown,
-          sourceName: row.source_name,
-          lastModified: Number((row as any).last_modified ?? Date.now()),
-        })),
-        visibilityTerms: terms,
-      });
-    } catch (error: any) {
-      console.error("Failed to load notes", error);
-      return json(set, 500, {
-        error: {
-          message: error?.message ?? "Unexpected error while loading notes.",
-        },
-      });
-    }
-  })
-  // Notes: POST (sync notes + update visibility terms)
-  .post("/api/notes", async ({ request, set }) => {
+      await app.stop();
+    } catch {}
     try {
-      const user = await getUserFromSession(request);
-      if (!user) {
-        return json(set, 401, { error: "UNAUTHORIZED" });
-      }
+      await closeAllDbPools();
+    } catch {}
+    console.log(`Shut down on ${signal}`);
+    process.exit(0);
+  };
 
-      let payload: any;
-      try {
-        payload = await request.json();
-      } catch {
-        return json(set, 400, { error: "INVALID_JSON" });
-      }
-
-      const notesIn = Array.isArray(payload?.notes) ? payload.notes : [];
-      const validNotes = notesIn
-        .filter(
-          (note: any) =>
-            note &&
-            typeof note.id === "string" &&
-            typeof note.markdown === "string",
-        )
-        .map((note: any) => ({
-          id: String(note.id),
-          markdown: String(note.markdown),
-          sourceName:
-            typeof note.sourceName === "string"
-              ? note.sourceName
-              : note.sourceName === null
-                ? null
-                : undefined,
-          lastModified:
-            typeof note.lastModified === "number"
-              ? note.lastModified
-              : Number(note.lastModified ?? Date.now()),
-        }));
-
-      if (validNotes.length) {
-        await upsertNotesForUser(user.id, validNotes);
-      }
-
-      const termsIn = Array.isArray(payload?.visibilityTerms)
-        ? payload.visibilityTerms
-        : [];
-      const validTerms = termsIn
-        .filter((item: any) => item && typeof item.term === "string")
-        .map((item: any) => ({
-          term: String(item.term).trim(),
-          emails: Array.isArray(item.emails)
-            ? item.emails
-                .map((email: unknown) =>
-                  typeof email === "string" ? email.trim().toLowerCase() : "",
-                )
-                .filter((email: string) => email.includes("@"))
-            : [],
-        }))
-        .filter(
-          (item: { term: string; emails: string[] }) => item.term.length > 0,
-        );
-
-      if (validTerms.length) {
-        await updateVisibilityTermsForUser(
-          user.id,
-          Object.fromEntries(
-            validTerms.map(
-              ({ term, emails }: { term: string; emails: string[] }) => [
-                term,
-                emails,
-              ],
-            ),
-          ),
-        );
-      }
-
-      const [rows, terms] = await Promise.all([
-        listNotesForUser(user.id),
-        listVisibilityTermsForUser(user.id),
-      ]);
-      return json(set, 200, {
-        notes: rows.map((row) => ({
-          id: row.id,
-          markdown: row.markdown,
-          sourceName: row.source_name,
-          lastModified: Number((row as any).last_modified ?? Date.now()),
-        })),
-        visibilityTerms: terms,
-      });
-    } catch (error: any) {
-      console.error("Failed to sync notes", error);
-      return json(set, 500, {
-        error: {
-          message: error?.message ?? "Unexpected error while syncing notes.",
-        },
-      });
-    }
-  })
-  // Notes: DELETE by id
-  .delete("/api/notes/:id", async ({ request, params, set }) => {
-    try {
-      const user = await getUserFromSession(request);
-      if (!user) {
-        return json(set, 401, { error: "UNAUTHORIZED" });
-      }
-      const noteId = (params as any)?.id;
-      if (!noteId) {
-        return json(set, 400, { error: "MISSING_NOTE_ID" });
-      }
-      await deleteNoteForUser(user.id, String(noteId));
-      return json(set, 200, { status: "deleted" });
-    } catch (error: any) {
-      console.error("Failed to delete note", error);
-      return json(set, 500, {
-        error: {
-          message: error?.message ?? "Unexpected error while deleting note.",
-        },
-      });
-    }
-  })
-  // Shared notes visible to current user's email
-  .get("/api/shared-notes", async ({ request, set }) => {
-    try {
-      const user = await getUserFromSession(request);
-      if (!user) {
-        return json(set, 401, { error: "UNAUTHORIZED" });
-      }
-      const userEmail =
-        typeof user.email === "string" ? user.email.trim().toLowerCase() : "";
-      if (!userEmail) {
-        return json(set, 400, { error: "EMAIL_REQUIRED" });
-      }
-
-      const rows: DbSharedNote[] = await listNotesSharedWithEmail(userEmail);
-      const notes: DiaryxNote[] = [];
-      const seen = new Set<string>();
-
-      for (const row of rows) {
-        try {
-          const { note } = parseDiaryxString(row.markdown, {
-            id: row.id,
-            sourceName: row.source_name ?? undefined,
-          });
-          const lastModified = Number((row as any).last_modified ?? Date.now());
-          note.lastModified = Number.isFinite(lastModified)
-            ? lastModified
-            : Date.now();
-          note.sourceName = row.source_name ?? undefined;
-
-          if (!hasSharedAccess(note, userEmail)) continue;
-          if (seen.has(note.id)) continue;
-
-          seen.add(note.id);
-          notes.push(note);
-        } catch (err) {
-          console.warn(`Failed to parse shared note ${row.id}`, err);
-        }
-      }
-
-      notes.sort((a, b) => {
-        const diff = (b.lastModified ?? 0) - (a.lastModified ?? 0);
-        if (diff !== 0) return diff;
-        return a.id.localeCompare(b.id);
-      });
-
-      return json(set, 200, { notes });
-    } catch (error: any) {
-      console.error("Failed to load shared notes", error);
-      return json(set, 500, {
-        error: {
-          message:
-            error?.message ?? "Unexpected error while loading shared notes.",
-        },
-      });
-    }
-  })
-  .listen(PORT);
-
-console.log(
-  `🦊 Elysia backend listening on http://localhost:${app.server?.port}`,
-);
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+}
