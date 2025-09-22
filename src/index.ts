@@ -307,6 +307,11 @@ const app = new Elysia()
   // CORS
   .use(cors())
   // Health
+  .get(
+    "/",
+    () =>
+      "<h1>Welcome to the Diaryx API!</h1><p>All systems are working!</p><p>If you want to use the app, please visit <a href='https://app.diaryx.net'>app.diaryx.net</a></p>",
+  )
   .get("/health", () => "ok")
   // Auth mounted at root so auth routes are under /api/auth/* (Better Auth handles sub-routes)
   .mount(getAuth().handler)
