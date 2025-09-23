@@ -294,7 +294,10 @@ export const createApp = () =>
     // CORS
     .use(
       cors({
-        origin: CORS_ORIGINS,
+        origin: (request) => {
+          const origin = request.headers.get("origin") || "";
+          return origin ? isOriginAllowed(origin, CORS_ORIGINS) : false;
+        },
         credentials: true,
         methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowedHeaders: ["Content-Type", "Authorization"],

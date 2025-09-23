@@ -127,11 +127,64 @@ export const getAuth = (): ReturnType<typeof betterAuth> => {
       secret,
       trustedOrigins: mergedOrigins,
       advanced: {
-        defaultCookieAttributes:
-          process.env.NODE_ENV === "production" ||
-          process.env.NODE_ENV === "staging"
-            ? { sameSite: "none", secure: true, partitioned: true }
-            : { sameSite: "lax", secure: false, partitioned: false },
+        defaultCookieAttributes: (() => {
+          const isProd =
+            process.env.NODE_ENV === "production" ||
+            process.env.NODE_ENV === "staging";
+          if (!isProd) {
+            return { sameSite: "lax", secure: false, partitioned: false };
+          }
+          let domain: string | undefined;
+          try {
+            const cfg = readAuthConfig();
+            if (cfg?.url) {
+              const u = new URL(cfg.url);
+              const h = u.hostname.toLowerCase();
+              if (h !== "localhost" && !/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+                domain = "." + h.replace(/^\./, "");
+              }
+            }
+          } catch {}
+          return {
+            sameSite: "none",
+            secure: true,
+            partitioned: true,
+            ...(domain ? { domain } : {}),
+          };
+        })(),
+        cookies: {
+          sessionToken: {
+            attributes: (() => {
+              const isProd =
+                process.env.NODE_ENV === "production" ||
+                process.env.NODE_ENV === "staging";
+              if (!isProd) {
+                return {
+                  sameSite: "lax",
+                  secure: false,
+                  partitioned: false,
+                };
+              }
+              let domain: string | undefined;
+              try {
+                const cfg = readAuthConfig();
+                if (cfg?.url) {
+                  const u = new URL(cfg.url);
+                  const h = u.hostname.toLowerCase();
+                  if (h !== "localhost" && !/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+                    domain = "." + h.replace(/^\./, "");
+                  }
+                }
+              } catch {}
+              return {
+                sameSite: "none",
+                secure: true,
+                partitioned: true,
+                ...(domain ? { domain } : {}),
+              };
+            })(),
+          },
+        },
       },
       plugins: [openAPI()],
     });
