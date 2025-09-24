@@ -1,4 +1,4 @@
-api.diaryx.net {
+api.diaryx.org {
     reverse_proxy backend:3000
     log {
         output stdout
