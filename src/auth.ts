@@ -102,6 +102,7 @@ export const getAuth = (): ReturnType<typeof betterAuth> => {
   const defaultOrigins = [
     // Prod
     "https://app.diaryx.net",
+    "https://app.diaryx.org",
     "https://*adammharris-projects.vercel.app",
     // Dev
     "http://localhost:3000",
