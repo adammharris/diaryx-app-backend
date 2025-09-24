@@ -27,6 +27,7 @@ const DEFAULT_CORS_ORIGINS = [
   "http://localhost:4321",
   "http://127.0.0.1:4321",
   "https://app.diaryx.net",
+  "https://app.diaryx.org",
   "https://adammharris-projects.vercel.app",
   "https://*.adammharris-projects.vercel.app",
 ];
